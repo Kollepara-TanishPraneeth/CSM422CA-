@@ -2,15 +2,17 @@
 ReviewSense AI - Prediction & Preprocessing Module
 
 Provides preprocessing functions and inference routines for movie review sentiment analysis.
+Supports deep learning model inference (LSTM) and demo fallback mode for immediate evaluation.
 """
 
 import os
 import re
 import json
+import math
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
-# Lazy import for TensorFlow to allow running standalone tests without heavy dependencies
+# Lazy import for TensorFlow
 try:
     import tensorflow as tf
 except ImportError:
@@ -33,6 +35,21 @@ DEFAULT_MAX_LEN = 200
 # Default artifacts directory relative to this script
 DEFAULT_ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
 
+# Sentiment valence lexicon for demo fallback mode
+DEMO_POSITIVE_LEXICON = {
+    "great", "excellent", "amazing", "wonderful", "fantastic", "brilliant", "superb",
+    "masterpiece", "outstanding", "impressive", "loved", "love", "good", "best",
+    "beautiful", "charming", "delightful", "breathtaking", "terrific", "phenomenal",
+    "stunning", "gem", "classic", "entertaining", "enjoyed", "enjoyable", "touching"
+}
+
+DEMO_NEGATIVE_LEXICON = {
+    "bad", "terrible", "awful", "horrible", "boring", "poor", "waste", "worst",
+    "disappointing", "dull", "annoying", "painful", "trash", "pathetic", "stupid",
+    "ridiculous", "uninspired", "mediocre", "pointless", "flawed", "fails", "fail",
+    "mess", "avoid", "garbage", "hated", "hate"
+}
+
 
 def clean_text(text: str) -> str:
     """
@@ -41,12 +58,6 @@ def clean_text(text: str) -> str:
     - Replaces punctuation and special symbols with spaces
     - Converts text to lowercase
     - Collapses consecutive whitespace characters
-
-    Args:
-        text: Raw review string.
-
-    Returns:
-        Cleaned, normalized review string.
     """
     if not isinstance(text, str):
         return ""
@@ -69,15 +80,6 @@ def tokenize_and_encode(
 ) -> List[int]:
     """
     Tokenizes cleaned text into integer token IDs compatible with Keras IMDB dataset.
-
-    Args:
-        text: Review text to encode.
-        word_index: Dictionary mapping word -> frequency rank (1-indexed).
-        max_words: Vocabulary size cutoff.
-        index_offset: Offset for special tokens (PAD=0, START=1, UNK=2).
-
-    Returns:
-        List of integer IDs starting with START_INDEX.
     """
     cleaned = clean_text(text)
     if not cleaned:
@@ -103,20 +105,10 @@ def pad_sequence(
 ) -> List[int]:
     """
     Pads or truncates a sequence of integers to a fixed length using pre-padding.
-
-    Args:
-        sequence: List of integer token IDs.
-        maxlen: Desired maximum length.
-        pad_value: Value used for padding (default 0).
-
-    Returns:
-        Fixed-length list of length `maxlen`.
     """
     if len(sequence) >= maxlen:
-        # Truncate from the beginning to keep the most recent words (pre-truncating)
         return sequence[-maxlen:]
     else:
-        # Pre-pad with zeros
         return [pad_value] * (maxlen - len(sequence)) + sequence
 
 
@@ -128,15 +120,6 @@ def preprocess_review(
 ) -> List[int]:
     """
     Complete preprocessing pipeline: Clean -> Tokenize & Encode -> Pad.
-
-    Args:
-        text: Raw user review.
-        word_index: Vocabulary index dictionary.
-        maxlen: Maximum sequence length for the LSTM.
-        max_words: Maximum vocabulary size.
-
-    Returns:
-        Padded sequence of length `maxlen`.
     """
     seq = tokenize_and_encode(text, word_index, max_words=max_words)
     return pad_sequence(seq, maxlen=maxlen)
@@ -145,7 +128,6 @@ def preprocess_review(
 def get_artifact_paths(artifacts_dir: Optional[Path] = None) -> Tuple[Path, Path]:
     """
     Resolves paths to the model file and the word_index.json vocabulary file.
-    Checks for .keras first, then .h5.
     """
     target_dir = Path(artifacts_dir) if artifacts_dir else DEFAULT_ARTIFACTS_DIR
     vocab_path = target_dir / "word_index.json"
@@ -158,7 +140,7 @@ def get_artifact_paths(artifacts_dir: Optional[Path] = None) -> Tuple[Path, Path
     elif h5_path.exists():
         model_path = h5_path
     else:
-        model_path = keras_path  # Default expected path
+        model_path = keras_path
 
     return model_path, vocab_path
 
@@ -168,32 +150,17 @@ def load_model_and_vocab(
 ) -> Tuple[Any, Dict[str, int]]:
     """
     Loads the trained Keras model and the word_index vocabulary mapping.
-
-    Raises:
-        ImportError: If TensorFlow is not installed.
-        FileNotFoundError: If the model or vocabulary file is missing.
     """
     if tf is None:
-        raise ImportError(
-            "TensorFlow is required to load the model. Run: pip install tensorflow"
-        )
+        raise ImportError("TensorFlow is required to load the deep learning model.")
 
     model_path, vocab_path = get_artifact_paths(artifacts_dir)
 
     if not model_path.exists():
-        raise FileNotFoundError(
-            f"Trained model not found at '{model_path}'.\n"
-            "Please train the model using `python train.py` or run "
-            "`notebooks/ReviewSenseAI_Training.ipynb` in Google Colab and place "
-            "the exported model into the 'artifacts/' folder."
-        )
+        raise FileNotFoundError(f"Trained model not found at '{model_path}'.")
 
     if not vocab_path.exists():
-        raise FileNotFoundError(
-            f"Vocabulary file not found at '{vocab_path}'.\n"
-            "Please run `python train.py` or download `word_index.json` from the "
-            "Google Colab training notebook."
-        )
+        raise FileNotFoundError(f"Vocabulary file not found at '{vocab_path}'.")
 
     model = tf.keras.models.load_model(str(model_path))
 
@@ -203,27 +170,36 @@ def load_model_and_vocab(
     return model, word_index
 
 
+def _demo_sentiment_scorer(text: str) -> float:
+    """
+    Transparent sentiment scoring heuristic used for demonstration when
+    model weights have not yet been placed in artifacts/.
+    Uses sigmoid-like score centered at 0.5.
+    """
+    words = clean_text(text).split()
+    if not words:
+        return 0.5
+
+    pos_hits = sum(1 for w in words if w in DEMO_POSITIVE_LEXICON)
+    neg_hits = sum(1 for w in words if w in DEMO_NEGATIVE_LEXICON)
+
+    delta = pos_hits - neg_hits
+    # Sigmoid mapping centered at 0.5
+    score = 1.0 / (1.0 + math.exp(-0.85 * delta))
+    # Bound between 0.05 and 0.95 for realistic demo outputs
+    return max(0.05, min(0.95, score))
+
+
 def predict_sentiment(
     text: str,
     model: Optional[Any] = None,
     word_index: Optional[Dict[str, int]] = None,
     artifacts_dir: Optional[Path] = None,
+    allow_demo_fallback: bool = True,
 ) -> Dict[str, Any]:
     """
     Predicts the sentiment of a movie review.
-
-    Args:
-        text: Raw text of the movie review.
-        model: Optional pre-loaded Keras model.
-        word_index: Optional pre-loaded vocabulary dictionary.
-        artifacts_dir: Optional custom path to artifacts folder.
-
-    Returns:
-        Dictionary with:
-          - 'sentiment': 'Positive' or 'Negative'
-          - 'score': Raw probability between 0.0 and 1.0
-          - 'confidence': Confidence percentage (0.0 to 1.0)
-          - 'cleaned_text': Cleaned input text
+    Uses trained LSTM neural network if available; gracefully falls back to demo mode.
     """
     if not text or not text.strip():
         raise ValueError("Review text cannot be empty.")
@@ -232,21 +208,28 @@ def predict_sentiment(
     if not cleaned:
         raise ValueError("Review contains no valid alphabetical words to analyze.")
 
-    if model is None or word_index is None:
-        loaded_model, loaded_vocab = load_model_and_vocab(artifacts_dir)
-        model = model or loaded_model
-        word_index = word_index or loaded_vocab
+    # Try deep learning inference first
+    is_deep_learning = False
+    if tf is not None:
+        try:
+            if model is None or word_index is None:
+                model, word_index = load_model_and_vocab(artifacts_dir)
+            encoded_padded = preprocess_review(text, word_index)
+            if np is not None:
+                model_input = np.array([encoded_padded], dtype=np.int32)
+            else:
+                model_input = [encoded_padded]
+            prediction = model.predict(model_input, verbose=0)
+            score = float(prediction[0][0])
+            is_deep_learning = True
+        except Exception:
+            if not allow_demo_fallback:
+                raise
 
-    encoded_padded = preprocess_review(text, word_index)
-
-    if np is not None:
-        model_input = np.array([encoded_padded], dtype=np.int32)
-    else:
-        # Fallback if numpy not directly imported
-        model_input = [encoded_padded]
-
-    prediction = model.predict(model_input, verbose=0)
-    score = float(prediction[0][0])
+    if not is_deep_learning:
+        if not allow_demo_fallback:
+            raise FileNotFoundError("Deep learning model not loaded and fallback is disabled.")
+        score = _demo_sentiment_scorer(text)
 
     label = "Positive" if score >= 0.5 else "Negative"
     confidence = score if label == "Positive" else (1.0 - score)
@@ -256,6 +239,7 @@ def predict_sentiment(
         "score": score,
         "confidence": confidence,
         "cleaned_text": cleaned,
+        "engine": "Trained LSTM Neural Network" if is_deep_learning else "Interactive Demo Heuristic",
     }
 
 
@@ -277,9 +261,10 @@ if __name__ == "__main__":
 
     try:
         result = predict_sentiment(review_input)
+        print(f"Engine              : {result['engine']}")
         print(f"Predicted Sentiment : {result['sentiment']}")
         print(f"Raw Output Score    : {result['score']:.4f}")
         print(f"Confidence Level    : {result['confidence'] * 100:.2f}%")
         print(f"Cleaned Text        : \"{result['cleaned_text']}\"")
-    except (FileNotFoundError, ImportError, ValueError) as err:
-        print(f"Notice: {err}")
+    except ValueError as err:
+        print(f"Error: {err}")

@@ -1,19 +1,20 @@
 """
 ReviewSense AI - Streamlit Web Application
 
-Interactive user interface for movie review sentiment analysis using trained LSTM model.
+Interactive user interface for movie review sentiment analysis.
+Supports trained LSTM deep learning model inference with an interactive evaluation fallback.
 """
 
 import os
 from pathlib import Path
 import streamlit as st
-import numpy as np
 
 # Import preprocessing and inference functions from predict.py
 from predict import (
     clean_text,
     preprocess_review,
     load_model_and_vocab,
+    predict_sentiment,
     get_artifact_paths,
     DEFAULT_ARTIFACTS_DIR
 )
@@ -40,11 +41,12 @@ st.markdown("""
         color: #4B5563;
         margin-bottom: 1.5rem;
     }
-    .metric-card {
-        background-color: #F3F4F6;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin-top: 10px;
+    .badge-info {
+        background-color: #EFF6FF;
+        border-left: 4px solid #3B82F6;
+        padding: 10px 14px;
+        border-radius: 4px;
+        margin-bottom: 15px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -52,7 +54,7 @@ st.markdown("""
 
 @st.cache_resource(show_spinner=False)
 def get_cached_model():
-    """Caches model and vocabulary loading in memory."""
+    """Attempts to cache deep learning model in memory."""
     try:
         model, word_index = load_model_and_vocab(DEFAULT_ARTIFACTS_DIR)
         return model, word_index, None
@@ -67,13 +69,28 @@ def main():
         unsafe_allow_html=True
     )
 
+    # Check model status
+    model, word_index, load_error = get_cached_model()
+    is_deep_learning = (model is not None)
+
     # Sidebar documentation and controls
     with st.sidebar:
         st.header("📌 Project Details")
         st.markdown(
-            "**ReviewSense AI** predicts whether a movie review expresses a "
-            "**Positive** or **Negative** sentiment using an LSTM recurrent neural network."
+            "**ReviewSense AI** classifies movie reviews as **Positive** or **Negative** "
+            "using deep sequential modeling."
         )
+
+        st.markdown("---")
+        st.subheader("⚙️ System Status")
+        if is_deep_learning:
+            st.success("🟢 **Trained LSTM Model Active**")
+        else:
+            st.info("🟡 **Interactive Evaluation Mode**")
+            st.caption(
+                "Awaiting `imdb_lstm_model.keras` in `artifacts/`. "
+                "Train via Google Colab (`ReviewSenseAI_Training.ipynb`) or `python train.py`."
+            )
 
         st.markdown("---")
         st.subheader("🧠 Model Architecture")
@@ -88,30 +105,18 @@ def main():
 
         st.markdown("---")
         st.subheader("📊 Dataset")
-        st.markdown(
-            "Trained on the **IMDB 50,000 Movie Reviews** dataset (25k train, 25k test)."
-        )
-
-        st.markdown("---")
+        st.markdown("Trained on the **IMDB 50,000 Movie Reviews** dataset (25k train, 25k test).")
         st.caption("B.Tech CSE Capstone Project • Antigravity AI")
 
-    # Load model and vocabulary
-    model_path, vocab_path = get_artifact_paths(DEFAULT_ARTIFACTS_DIR)
-    model, word_index, load_error = get_cached_model()
-
-    # Handle missing model files gracefully
-    if load_error is not None:
-        st.warning("⚠️ **Trained Model Artifacts Not Detected**")
-        st.info(
-            f"The application requires model files inside `artifacts/`:\n\n"
-            f"- Model expected at: `{model_path.name}`\n"
-            f"- Vocabulary expected at: `{vocab_path.name}`\n\n"
-            f"**To get started:**\n"
-            f"1. Run `python train.py` to train locally, OR\n"
-            f"2. Execute `notebooks/ReviewSenseAI_Training.ipynb` on Google Colab (free GPU), "
-            f"then place the downloaded `imdb_lstm_model.keras` and `word_index.json` into the `artifacts/` directory."
-        )
-        st.stop()
+    # Informational banner if running without trained model weights yet
+    if not is_deep_learning:
+        st.markdown("""
+        <div class="badge-info">
+            ℹ️ <strong>Evaluation Mode:</strong> Ready for testing and demonstration!
+            To activate deep learning LSTM weights, place <code>imdb_lstm_model.keras</code>
+            from the Google Colab notebook into the <code>artifacts/</code> folder.
+        </div>
+        """, unsafe_allow_html=True)
 
     # Sample reviews for quick evaluation
     st.markdown("### Test with Sample Reviews:")
@@ -150,15 +155,18 @@ def main():
             st.error("The input does not contain any valid English words to analyze.")
             return
 
-        # Preprocessing & Inference
-        with st.spinner("Analyzing sentiment with LSTM..."):
-            encoded_padded = preprocess_review(user_review, word_index)
-            input_tensor = np.array([encoded_padded], dtype=np.int32)
-            raw_prediction = float(model.predict(input_tensor, verbose=0)[0][0])
+        with st.spinner("Analyzing sentiment..."):
+            result = predict_sentiment(
+                user_review,
+                model=model,
+                word_index=word_index,
+                allow_demo_fallback=True
+            )
 
-        is_positive = raw_prediction >= 0.5
-        sentiment_label = "Positive" if is_positive else "Negative"
-        confidence_val = raw_prediction if is_positive else (1.0 - raw_prediction)
+        sentiment_label = result["sentiment"]
+        raw_score = result["score"]
+        confidence_val = result["confidence"]
+        is_positive = (sentiment_label == "Positive")
 
         st.markdown("---")
         st.subheader("🎯 Prediction Result")
@@ -175,18 +183,20 @@ def main():
             st.metric(
                 label="Confidence Score",
                 value=f"{confidence_val * 100:.1f}%",
-                delta=f"Raw Model Output: {raw_prediction:.4f}"
+                delta=f"Engine: {result['engine']}"
             )
 
         # Visual gauge
         st.markdown("**Sentiment Spectrum (0.0 = Very Negative, 1.0 = Very Positive):**")
-        st.progress(float(raw_prediction))
+        st.progress(float(raw_score))
 
         # Additional explanation expander
         with st.expander("🔍 View Preprocessing Details"):
             st.write("**Cleaned Text (HTML & punctuation removed):**")
             st.code(cleaned, language="text")
-            st.write(f"**Processed Token Sequence Length:** {len(encoded_padded)} tokens (padded/truncated to 200)")
+            if word_index:
+                seq = preprocess_review(user_review, word_index)
+                st.write(f"**Processed Token Sequence Length:** {len(seq)} tokens (pre-padded to 200)")
 
 
 if __name__ == "__main__":
