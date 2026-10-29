@@ -52,3 +52,4 @@ echo "=================================================="
 echo " 🎉 Successfully uploaded ReviewSense AI to GitHub!"
 echo " Repository URL: $REPO_URL"
 echo "=================================================="
+

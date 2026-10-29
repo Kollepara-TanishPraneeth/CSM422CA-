@@ -27,3 +27,4 @@ fi
 
 echo "Starting Streamlit web interface..."
 streamlit run app.py
+
