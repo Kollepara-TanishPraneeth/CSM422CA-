@@ -1,0 +1,38 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE configs
+.vscode/
+.idea/
+
+# Large model binaries and training artifacts (keep directories tracked via README.md)
+*.h5
+*.keras
+*.tflite
+*.pt
+*.pth
+!artifacts/README.md
+!results/README.md
+
+# Streamlit local state
+.streamlit/
